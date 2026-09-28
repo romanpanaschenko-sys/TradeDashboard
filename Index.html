@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trade Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0b0e11;
+    color: #eaecef;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    padding: 16px;
+    min-height: 100vh;
+  }
+  header {
+    text-align: center;
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #1e2329;
+  }
+  header h1 {
+    font-size: 20px;
+    color: #f0b90b;
+    letter-spacing: 1px;
+  }
+  header p {
+    font-size: 12px;
+    color: #848e9c;
+    margin-top: 4px;
+  }
+  .card {
+    background: #181a20;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 14px;
+    border: 1px solid #2b3139;
+  }
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .symbol {
+    font-size: 18px;
+    font-weight: 700;
+  }
+  .signal {
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .signal.buy { background: rgba(14,203,129,0.15); color: #0ecb81; }
+  .signal.sell { background: rgba(246,70,93,0.15); color: #f6465d; }
+  .signal.hold { background: rgba(132,142,156,0.15); color: #848e9c; }
+  .price {
+    font-size: 26px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .change {
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
+  .change.up { color: #0ecb81; }
+  .change.down { color: #f6465d; }
+  .stats {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: #848e9c;
+    margin-bottom: 10px;
+  }
+  .stat-value { color: #eaecef; font-weight: 600; }
+  .rsi-bar {
+    width: 100%;
+    height: 6px;
+    background: #2b3139;
+    border-radius: 3px;
+    overflow: hidden;
+    position: relative;
+    margin-bottom: 10px;
+  }
+  .rsi-fill {
+    height: 100%;
+    transition: width 0.5s;
+  }
+  .chart-wrap {
+    height: 100px;
+    position: relative;
+  }
+  .footer {
+    text-align: center;
+    font-size: 11px;
+    color: #474d57;
+    margin-top: 20px;
+    padding-top: 12px;
+    border-top: 1px solid #1e2329;
+  }
+  .loading {
+    text-align: center;
+    color: #848e9c;
+    padding: 40px 0;
+  }
+  .error {
+    color: #f6465d;
+    font-size: 12px;
+    text-align: center;
+    padding: 8px;
+    background: rgba(246,70,93,0.1);
+    border-radius: 6px;
+    margin-bottom: 10px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>📊 TRADE DASHBOARD</h1>
+  <p id="updated">Загрузка данных с OKX...</p>
+</header>
+<div id="cards">
+  <div class="loading">⏳ Получаю данные с биржи...</div>
+</div>
+<div class="footer">
+  Данные: OKX • Обновление каждые 30 сек<br>
+  RSI на часовых свечах • <span id="clock"></span>
+</div>
+
+<script>
+const ASSETS = [
+  { id: 'NOT',  inst: 'NOT-USDT',  name: 'Notcoin' },
+  { id: 'GRAM', inst: 'GRAM-USDT', name: 'Gram' },
+  { id: 'SOL',  inst: 'SOL-USDT',  name: 'Solana' }
+];
+
+const BUY_THRESHOLD = 30;
+const SELL_THRESHOLD = 70;
+
+// Глобальные переменные для графиков
+const charts = {};
+
+function calculateRSI(closes, period = 14) {
+  if (closes.length < period + 1) return null;
+  let gains = 0, losses = 0;
+  for (let i = 1; i <= period; i++) {
+    const diff = closes[i] - closes[i-1];
+    if (diff > 0) gains += diff; else losses -= diff;
+  }
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+  for (let i = period + 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i-1];
+    if (diff > 0) {
+      avgGain = (avgGain * (period - 1) + diff) / period;
+      avgLoss = (avgLoss * (period - 1)) / period;
+    } else {
+      avgGain = (avgGain * (period - 1)) / period;
+      avgLoss = (avgLoss * (period - 1) + (-diff)) / period;
+    }
+  }
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
+}
+
+function getSignal(rsi) {
+  if (rsi === null) return { text: '—', cls: 'hold' };
+  if (rsi < BUY_THRESHOLD) return { text: '🟢 КУПИТЬ', cls: 'buy' };
+  if (rsi > SELL_THRESHOLD) return { text: '🔴 ПРОДАТЬ', cls: 'sell' };
+  return { text: '⏸️ ДЕРЖАТЬ', cls: 'hold' };
+}
+
+function formatPrice(p) {
+  if (p >= 1000) return p.toFixed(2);
+  if (p >= 1) return p.toFixed(4);
+  return p.toFixed(8);
+}
+
+function rsiColor(rsi) {
+  if (rsi === null) return '#848e9c';
+  if (rsi < 30) return '#0ecb81';
+  if (rsi > 70) return '#f6465d';
+  return '#f0b90b';
+}
+
+async function fetchCandles(instId) {
+  const url = `https://www.okx.com/api/v5/market/candles?instId=${instId}&bar=1H&limit=100`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if (!data.data || data.data.length === 0) throw new Error('Нет данных');
+  // OKX returns newest first, reverse
+  return data.data.reverse().map(c => ({
+    time: parseInt(c[0]),
+    open: parseFloat(c[1]),
+    high: parseFloat(c[2]),
+    low: parseFloat(c[3]),
+    close: parseFloat(c[4]),
+    volume: parseFloat(c[5])
+  }));
+}
+
+function renderCard(asset, candles) {
+  const closes = candles.map(c => c.close);
+  // RSI считаем по закрытым свечам (все, кроме последней формирующейся)
+  const closedCloses = closes.slice(0, -1);
+  const rsi = calculateRSI(closedCloses);
+  const signal = getSignal(rsi);
+
+  const lastClosed = candles[candles.length - 2];
+  const price = lastClosed.close;
+  const openPrice = candles[0].close;
+  const changePct = ((price - openPrice) / openPrice) * 100;
+  const changeCls = changePct >= 0 ? 'up' : 'down';
+  const changeSign = changePct >= 0 ? '+' : '';
+
+  // Уровень RSI в процентах для полосы
+  const rsiPct = rsi === null ? 0 : rsi;
+
+  // Данные для графика (последние 48 свечей)
+  const chartData = candles.slice(-48);
+
+  return `
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="symbol">${asset.name} <span style="color:#848e9c;font-size:13px;">${asset.id}</span></div>
+        </div>
+        <div class="signal ${signal.cls}">${signal.text}</div>
+      </div>
+      <div class="price">$${formatPrice(price)}</div>
+      <div class="change ${changeCls}">${changeSign}${changePct.toFixed(2)}% за 100ч</div>
+      <div class="stats">
+        <span>RSI: <span class="stat-value" style="color:${rsiColor(rsi)}">${rsi === null ? '—' : rsi.toFixed(2)}</span></span>
+        <span>Объём: <span class="stat-value">${(lastClosed.volume/1000).toFixed(1)}K</span></span>
+      </div>
+      <div class="rsi-bar">
+        <div class="rsi-fill" style="width:${rsiPct}%;background:${rsiColor(rsi)}"></div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-${asset.id}"></canvas></div>
+    </div>
+  `;
+}
+
+function drawChart(assetId, candles) {
+  const ctx = document.getElementById(`chart-${assetId}`);
+  if (!ctx) return;
+  if (charts[assetId]) charts[assetId].destroy();
+
+  const labels = candles.map(c => {
+    const d = new Date(c.time);
+    return `${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')}`;
+  });
+  const data = candles.map(c => c.close);
+
+  const first = data[0];
+  const last = data[data.length - 1];
+  const color = last >= first ? '#0ecb81' : '#f6465d';
+  const bgColor = last >= first ? 'rgba(14,203,129,0.08)' : 'rgba(246,70,93,0.08)';
+
+  charts[assetId] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{
+        data: data,
+        borderColor: color,
+        backgroundColor: bgColor,
+        borderWidth: 1.5,
+        fill: true,
+        pointRadius: 0,
+        tension: 0.3
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      scales: {
+        x: { display: false },
+        y: { display: false }
+      },
+      animation: { duration: 300 }
+    }
+  });
+}
+
+async function updateDashboard() {
+  const cardsDiv = document.getElementById('cards');
+  try {
+    const results = await Promise.all(
+      ASSETS.map(async (a) => {
+        try {
+          const candles = await fetchCandles(a.inst);
+          return { asset: a, candles, error: null };
+        } catch (e) {
+          return { asset: a, candles: null, error: e.message };
+        }
+      })
+    );
+
+    let html = '';
+    for (const r of results) {
+      if (r.error) {
+        html += `<div class="card"><div class="symbol">${r.asset.name}</div><div class="error">Ошибка: ${r.error}</div></div>`;
+      } else {
+        html += renderCard(r.asset, r.candles);
+      }
+    }
+    cardsDiv.innerHTML = html;
+
+    // Рисуем графики после вставки DOM
+    for (const r of results) {
+      if (!r.error) drawChart(r.asset.id, r.candles.slice(-48));
+    }
+
+    const now = new Date();
+    document.getElementById('updated').textContent =
+      `Обновлено: ${now.toLocaleTimeString('ru-RU')}`;
+  } catch (e) {
+    cardsDiv.innerHTML = `<div class="error">Не удалось получить данные: ${e.message}</div>`;
+  }
+}
+
+function updateClock() {
+  const now = new Date();
+  document.getElementById('clock').textContent = now.toLocaleString('ru-RU');
+}
+
+updateDashboard();
+updateClock();
+setInterval(updateDashboard, 30000);
+setInterval(updateClock, 1000);
+</script>
+</body>
+</html>
